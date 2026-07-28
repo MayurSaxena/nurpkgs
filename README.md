@@ -30,7 +30,22 @@ My personal [NUR](https://github.com/nix-community/NUR) repository.
   services.trek = {
     enable = true;
     allowedOrigins = [ "https://trek.example.com" ];
-    environmentFile = "/run/secrets/trek"; # ENCRYPTION_KEY, etc.
+    environmentFiles = [ "/run/secrets/trek-env" ]; # ENCRYPTION_KEY, etc.
   };
 }
 ```
+
+`services.trek` covers most of upstream's `.env.example` as typed options
+(session/cookie settings, OIDC, MCP, Overpass, ...); anything not covered
+can be set via `services.trek.environment` (non-secret) or
+`services.trek.environmentFiles` (secret). Two things worth calling out:
+
+- **impermanence**: state lives entirely under `services.trek.dataDir`
+  (`/var/lib/trek` by default), fully managed by systemd's
+  `StateDirectory=`. Add that one path to your persistence config and
+  nothing else needs to change — the persistent bind mount is already in
+  place before the service starts.
+- **sops-nix**: `environmentFiles` takes a list of paths, so
+  `[ config.sops.secrets.trek-env.path ]` (a templated sops-nix secret
+  combining `ENCRYPTION_KEY`, `OIDC_CLIENT_SECRET`, etc.) or one path per
+  sops secret both work directly.

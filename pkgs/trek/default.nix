@@ -54,11 +54,12 @@ buildNpmPackage (finalAttrs: {
 
     # The server resolves its SQLite database and uploads relative to
     # process.cwd() as "./data" and "./uploads" (matching upstream's Docker
-    # image, which bind-mounts host directories at the same two paths and
-    # symlinks them in). Point both at a fixed runtime state directory so the
-    # server can run with the store path itself as its working directory.
-    ln -s /var/lib/trek/data $out/lib/trek/server/data
-    ln -s /var/lib/trek/uploads $out/lib/trek/server/uploads
+    # image). These are plain empty directories rather than paths baked to
+    # some fixed runtime location, so the package stays agnostic of where
+    # state actually lives; the NixOS module bind-mounts its (configurable)
+    # state directory over these two at service start (see
+    # services.trek.dataDir).
+    mkdir -p $out/lib/trek/server/data $out/lib/trek/server/uploads
 
     makeWrapper ${lib.getExe nodejs} $out/bin/trek \
       --add-flags "--require tsconfig-paths/register $out/lib/trek/server/dist/index.js" \
