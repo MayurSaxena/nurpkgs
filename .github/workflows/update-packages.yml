@@ -51,6 +51,16 @@ jobs:
 
       - name: Check for a new release
         id: update
+        # nix-update's --use-github-releases path talks to the GitHub REST
+        # API, and unauthenticated it gets the shared 60-requests/hour
+        # per-IP budget -- which runners routinely exhaust, failing this
+        # step with "HTTP Error 403: rate limit exceeded" and skipping a
+        # day's update entirely. nix-update picks GITHUB_TOKEN up on its
+        # own and sends it as a bearer token, which raises the limit to
+        # 5000/hour. Harmless for scrobblex, whose default tag detection
+        # reads the atom feed and never hits the API.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           nix run nixpkgs#nix-update -- --flake --version=stable ${{ matrix.releaseFlag }} ${{ matrix.package }}
           if git diff --quiet -- "pkgs/${{ matrix.package }}"; then
@@ -60,32 +70,64 @@ jobs:
             git diff -- "pkgs/${{ matrix.package }}"
           fi
 
-      # Runs the full build plus every NixOS VM test the package defines
-      # (passthru.tests) against the *new* version before anything reaches
-      # a PR. Deliberately doesn't fail the step itself (set +e / exit 0)
-      # so the PR still gets opened either way -- see the next two steps.
-      - name: Build and test the update
+      # Runs the same lint gate as lint.yml, plus the full build and every
+      # NixOS VM test the package defines (passthru.tests), against the
+      # *new* version before anything reaches a PR.
+      #
+      # The lint half has to live here rather than in lint.yml: GitHub
+      # never starts a workflow run for a PR opened with the default
+      # GITHUB_TOKEN, so lint.yml's own pull_request trigger silently does
+      # nothing on these PRs -- every such run is recorded as
+      # "action_required" with zero jobs, and the PR sits with no checks at
+      # all. A schedule: trigger wouldn't help either, since scheduled runs
+      # only ever run on the default branch. Linting the working tree here
+      # is the check that actually executes, and this tree is byte-for-byte
+      # what the PR will contain. Lint runs before the builds so the
+      # ./result symlink they create can't end up in its way.
+      #
+      # Deliberately doesn't fail the step itself (set +e / exit 0) so the
+      # PR still gets opened either way -- see the next two steps.
+      - name: Lint, build and test the update
         if: steps.update.outputs.changed == 'true'
         id: verify
         run: |
           set +e
-          failed=0
+          lint_failed=0
+          build_failed=0
+
+          echo "::group::lint (nixfmt, statix, deadnix)"
+          mapfile -t nix_files < <(find . -name "*.nix" -not -path "./.git/*")
+          nix run nixpkgs#nixfmt -- --check "${nix_files[@]}" || lint_failed=1
+          nix run nixpkgs#statix -- check . || lint_failed=1
+          nix run nixpkgs#deadnix -- --fail . || lint_failed=1
+          echo "::endgroup::"
 
           echo "::group::nix build .#packages.x86_64-linux.${{ matrix.package }}"
-          nix build -L ".#packages.x86_64-linux.${{ matrix.package }}" || failed=1
+          nix build -L ".#packages.x86_64-linux.${{ matrix.package }}" || build_failed=1
           echo "::endgroup::"
 
           for test in ${{ matrix.tests }}; do
             echo "::group::nix build .#packages.x86_64-linux.${{ matrix.package }}.tests.$test"
-            nix build -L ".#packages.x86_64-linux.${{ matrix.package }}.tests.$test" || failed=1
+            nix build -L ".#packages.x86_64-linux.${{ matrix.package }}.tests.$test" || build_failed=1
             echo "::endgroup::"
           done
 
-          echo "failed=$failed" >> "$GITHUB_OUTPUT"
-          if [ "$failed" = "1" ]; then
-            echo "status=❌ FAILED -- do not merge without investigating" >> "$GITHUB_OUTPUT"
+          if [ "$lint_failed" = "1" ]; then
+            echo "lint=❌ FAILED" >> "$GITHUB_OUTPUT"
+          else
+            echo "lint=✅ passed" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$build_failed" = "1" ]; then
+            echo "status=❌ FAILED" >> "$GITHUB_OUTPUT"
           else
             echo "status=✅ passed" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$lint_failed" = "1" ] || [ "$build_failed" = "1" ]; then
+            echo "failed=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "failed=0" >> "$GITHUB_OUTPUT"
           fi
           exit 0
 
@@ -98,11 +140,18 @@ jobs:
           body: |
             Automated version bump proposed by [`nix-update`](https://github.com/Mic92/nix-update).
 
+            **Lint (nixfmt / statix / deadnix):** ${{ steps.verify.outputs.lint }}
             **Build + NixOS VM test result:** ${{ steps.verify.outputs.status }}
+            ${{ steps.verify.outputs.failed == '1' && '⚠️ Something above failed -- do not merge without investigating.' || '' }}
 
             Full logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Review the version/hash diff below (GitHub's own diff view), then merge if it looks right.
+
+            These checks run inside the update workflow rather than as PR
+            checks -- GitHub doesn't start workflow runs for PRs opened with
+            the default GITHUB_TOKEN, so this PR will show no checks of its
+            own. The results above are the real gate.
           branch: nix-update/${{ matrix.package }}
           delete-branch: true
           add-paths: pkgs/${{ matrix.package }}

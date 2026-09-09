@@ -35,7 +35,14 @@ Run a package's tests directly with e.g. `nix build .#packages.x86_64-linux.<pkg
 
 ## Automated updates
 
-`.github/workflows/update-packages.yml` runs daily (and via manual `workflow_dispatch`): for each package, it runs `nix-update`, and — only if that finds a newer version — builds the package and runs its full `passthru.tests` suite against the new version before opening a PR. **It never auto-merges**; every version bump lands as a PR for manual review, by design (that's a deliberate choice, not a limitation — revisit only if explicitly asked to change it).
+`.github/workflows/update-packages.yml` runs daily (and via manual `workflow_dispatch`): for each package, it runs `nix-update`, and — only if that finds a newer version — lints the tree and builds the package and runs its full `passthru.tests` suite against the new version before opening a PR. **It never auto-merges**; every version bump lands as a PR for manual review, by design (that's a deliberate choice, not a limitation — revisit only if explicitly asked to change it).
+
+Two consequences of PRs being opened with the default `GITHUB_TOKEN`, both non-obvious and both already worked around — don't "simplify" either back out:
+
+- **Update PRs get no checks of their own.** GitHub deliberately doesn't start workflow runs for events caused by `GITHUB_TOKEN`, so `lint.yml`'s `pull_request` trigger never fires on an update PR — the run is recorded as `action_required` with zero jobs and the PR sits with no checks at all. That's why the lint gate (`nixfmt --check`, `statix`, `deadnix`) is duplicated *inside* `update-packages.yml`'s verify step, against the working tree that is byte-for-byte what the PR will contain. A `schedule:` trigger on `lint.yml` would not fix this — scheduled runs only ever run on the default branch. Getting real PR checks instead would require creating the PR with a PAT or GitHub App token.
+- **A merge pushed by the workflow would not trigger `nur-notify.yml`** for the same reason — relevant only if auto-merge is ever added.
+
+`nix-update`'s `--use-github-releases` path calls the GitHub REST API, which unauthenticated shares a 60-request/hour per-IP budget that runners routinely exhaust — this failed the update step outright (`HTTP Error 403: rate limit exceeded`) on 2026-08-31 and 2026-09-02, silently skipping those days. The step now passes `GITHUB_TOKEN` in `env:`, which `nix-update` picks up on its own and sends as a bearer token for the 5000/hour limit. Only the `--use-github-releases` packages need it; `scrobblex`'s tag detection reads the atom feed and never touches the API.
 
 Each package needs the *correct* `nix-update` release-detection flag — get this wrong and you'll get a silently-wrong proposed version, not an error:
 
