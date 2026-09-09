@@ -255,7 +255,8 @@ jobs:
         if: >-
           steps.update.outputs.changed == 'true'
           && (steps.pr.outputs.pull-request-operation == 'created'
-          || steps.pr.outputs.pull-request-operation == 'updated')
+          || steps.pr.outputs.pull-request-operation == 'updated'
+          || steps.merge.outputs.merged == 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.pull-request-number }}
